@@ -1,0 +1,507 @@
+
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
+
+import java.io.*;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.*;
+
+//Simple HTTP server to run benchmarks and display results on a web page
+
+public class BenchmarkWebServer {
+    private static final int PORT = 8888;
+    private static final ExecutorService executor = Executors.newCachedThreadPool();
+    private static volatile String latestResults = "No benchmarks run yet. Click 'Run Benchmarks' to start.";
+    private static volatile boolean isRunning = false;
+
+    public static void main(String[] args) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
+        
+        // Serve the main HTML page
+        server.createContext("/", new HomeHandler());
+        
+        // API endpoint to run benchmarks
+        server.createContext("/api/run", new RunBenchmarkHandler());
+        
+        // API endpoint to get results
+        server.createContext("/api/results", new ResultsHandler());
+        
+        server.setExecutor(executor);
+        server.start();
+        
+        System.out.println("===========================================");
+        System.out.println("Benchmark Web Server Started!");
+        System.out.println("===========================================");
+        System.out.println("Open your browser and go to:");
+        System.out.println("  http://localhost:" + PORT);
+        System.out.println("===========================================");
+    }
+
+    static class HomeHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String html = getHtmlPage();
+            byte[] response = html.getBytes(StandardCharsets.UTF_8);
+            
+            exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+            exchange.sendResponseHeaders(200, response.length);
+            
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(response);
+            }
+        }
+    }
+
+    static class RunBenchmarkHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (isRunning) {
+                sendJsonResponse(exchange, "{\"status\":\"running\",\"message\":\"Benchmark already running\"}");
+                return;
+            }
+            
+            // Start benchmark in background
+            executor.submit(() -> {
+                try {
+                    isRunning = true;
+                    latestResults = "Running benchmarks... Please wait (this may take 1-2 minutes)...\n\n";
+                    runBenchmarks();
+                    isRunning = false;
+                } catch (Exception e) {
+                    latestResults = "Error running benchmarks:\n" + e.getMessage();
+                    isRunning = false;
+                }
+            });
+            
+            sendJsonResponse(exchange, "{\"status\":\"started\",\"message\":\"Benchmark started\"}");
+        }
+    }
+
+    static class ResultsHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String json = String.format(
+                "{\"status\":\"%s\",\"results\":\"%s\"}", 
+                isRunning ? "running" : "complete",
+                escapeJson(latestResults)
+            );
+            sendJsonResponse(exchange, json);
+        }
+    }
+
+    private static void sendJsonResponse(HttpExchange exchange, String json) throws IOException {
+        byte[] response = json.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, response.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(response);
+        }
+    }
+
+    private static String escapeJson(String s) {
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
+
+    private static void runBenchmarks() {
+        StringBuilder results = new StringBuilder();
+        results.append("=== Connect Four Benchmark Results ===\n\n");
+        
+        try {
+            // Run simple performance tests
+            long startTime = System.nanoTime();
+            
+            // Benchmark 1: Drop operations
+            results.append("1. Board Drop Operations\n");
+            Board board = new Board();
+            int iterations = 1000000;
+            long dropStart = System.nanoTime();
+            for (int i = 0; i < iterations; i++) {
+                board.clear();
+                for (int col = 0; col < Board.COLS; col++) {
+                    board.drop(1, col);
+                }
+            }
+            long dropEnd = System.nanoTime();
+            double dropThroughput = (iterations * Board.COLS) / ((dropEnd - dropStart) / 1_000_000_000.0);
+            results.append(String.format("   Throughput: %.2f ops/sec\n\n", dropThroughput));
+            
+            // Benchmark 2: Check winner
+            results.append("2. Check Winner Operations\n");
+            board.clear();
+            board.drop(1, 3);
+            board.drop(2, 3);
+            board.drop(1, 3);
+            board.drop(2, 3);
+            board.drop(1, 3);
+            board.drop(2, 3);
+            
+            long winnerStart = System.nanoTime();
+            for (int i = 0; i < iterations; i++) {
+                board.checkWinner();
+            }
+            long winnerEnd = System.nanoTime();
+            double winnerThroughput = iterations / ((winnerEnd - winnerStart) / 1_000_000_000.0);
+            results.append(String.format("   Throughput: %.2f ops/sec\n\n", winnerThroughput));
+            
+            // Benchmark 3: Serialize
+            results.append("3. Board Serialization\n");
+            long serializeStart = System.nanoTime();
+            for (int i = 0; i < iterations; i++) {
+                board.serialize();
+            }
+            long serializeEnd = System.nanoTime();
+            double serializeThroughput = iterations / ((serializeEnd - serializeStart) / 1_000_000_000.0);
+            results.append(String.format("   Throughput: %.2f ops/sec\n\n", serializeThroughput));
+            
+            // Benchmark 4: Deserialize
+            results.append("4. Board Deserialization\n");
+            String data = "0,0,0,0,0,0,0;0,0,0,0,0,0,0;0,0,0,1,0,0,0;0,0,0,2,0,0,0;0,0,0,1,0,0,0;0,0,0,2,0,0,0";
+            long deserializeStart = System.nanoTime();
+            for (int i = 0; i < iterations; i++) {
+                board.deserialize(data);
+            }
+            long deserializeEnd = System.nanoTime();
+            double deserializeThroughput = iterations / ((deserializeEnd - deserializeStart) / 1_000_000_000.0);
+            results.append(String.format("   Throughput: %.2f ops/sec\n\n", deserializeThroughput));
+            
+            // Benchmark 5: Full game simulation
+            results.append("5. Full Game Simulation\n");
+            int gameIterations = 100000;
+            long gameStart = System.nanoTime();
+            for (int i = 0; i < gameIterations; i++) {
+                board.clear();
+                for (int col = 0; col < Board.COLS; col++) {
+                    board.drop(1, col);
+                    board.checkWinner();
+                    if (board.isFull()) break;
+                    board.drop(2, col);
+                    board.checkWinner();
+                    if (board.isFull()) break;
+                }
+            }
+            long gameEnd = System.nanoTime();
+            double gameThroughput = gameIterations / ((gameEnd - gameStart) / 1_000_000_000.0);
+            results.append(String.format("   Throughput: %.2f games/sec\n\n", gameThroughput));
+            
+            long endTime = System.nanoTime();
+            double totalTime = (endTime - startTime) / 1_000_000_000.0;
+            
+            results.append("=== Summary ===\n");
+            results.append(String.format("Total benchmark time: %.2f seconds\n", totalTime));
+            results.append("\nBenchmarks completed successfully!\n");
+            results.append("Higher throughput values indicate better performance.\n");
+            
+        } catch (Exception e) {
+            results.append("\nError during benchmarking:\n");
+            results.append(e.toString());
+        }
+        
+        latestResults = results.toString();
+    }
+
+    private static String getHtmlPage() {
+        return """
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect Four - Performance Benchmarks</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .controls {
+            padding: 30px;
+            text-align: center;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.1em;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            font-weight: bold;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            margin: 20px 30px;
+            border-radius: 5px;
+        }
+        
+        .status.running {
+            border-left-color: #ffc107;
+            background: #fff9e6;
+        }
+        
+        .status.complete {
+            border-left-color: #28a745;
+            background: #e8f5e9;
+        }
+        
+        .results-container {
+            padding: 30px;
+        }
+        
+        .results-box {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            padding: 25px;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            font-size: 0.95em;
+            line-height: 1.6;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .metric-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            border: 2px solid #667eea;
+            text-align: center;
+        }
+        
+        .metric-card h3 {
+            color: #667eea;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        
+        .metric-card .value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .metric-card .unit {
+            font-size: 0.8em;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎮 Connect Four</h1>
+            <p>Performance Benchmark Dashboard</p>
+        </div>
+        
+        <div class="controls">
+            <button id="runBtn" class="btn" onclick="runBenchmark()">
+                🚀 Run Benchmarks
+            </button>
+        </div>
+        
+        <div id="statusBar" class="status" style="display:none;">
+            <span id="statusText">Ready</span>
+        </div>
+        
+        <div class="results-container">
+            <div id="metricsGrid" class="metrics-grid" style="display:none;"></div>
+            <div class="results-box" id="results">
+                Click "Run Benchmarks" to start performance testing.
+                
+                This will measure:
+                • Board drop operations throughput
+                • Winner checking performance
+                • Serialization speed
+                • Deserialization speed
+                • Full game simulation performance
+                
+                Note: Benchmarks may take 1-2 minutes to complete.
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let polling = null;
+        
+        async function runBenchmark() {
+            const btn = document.getElementById('runBtn');
+            const status = document.getElementById('statusBar');
+            const statusText = document.getElementById('statusText');
+            const results = document.getElementById('results');
+            
+            btn.disabled = true;
+            status.style.display = 'block';
+            status.className = 'status running';
+            statusText.innerHTML = '<span class="spinner"></span>Starting benchmarks...';
+            results.textContent = 'Initializing benchmark suite...';
+            
+            try {
+                const response = await fetch('/api/run');
+                const data = await response.json();
+                
+                if (data.status === 'started') {
+                    statusText.innerHTML = '<span class="spinner"></span>Running benchmarks... Please wait...';
+                    startPolling();
+                }
+            } catch (error) {
+                results.textContent = 'Error starting benchmark: ' + error;
+                btn.disabled = false;
+                status.style.display = 'none';
+            }
+        }
+        
+        function startPolling() {
+            if (polling) clearInterval(polling);
+            
+            polling = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/results');
+                    const data = await response.json();
+                    
+                    document.getElementById('results').textContent = data.results;
+                    
+                    if (data.status === 'complete') {
+                        clearInterval(polling);
+                        const status = document.getElementById('statusBar');
+                        const statusText = document.getElementById('statusText');
+                        status.className = 'status complete';
+                        statusText.textContent = '✅ Benchmarks completed successfully!';
+                        document.getElementById('runBtn').disabled = false;
+                        
+                        extractMetrics(data.results);
+                    }
+                } catch (error) {
+                    console.error('Polling error:', error);
+                }
+            }, 1000);
+        }
+        
+        function extractMetrics(resultsText) {
+            const metrics = [];
+            const lines = resultsText.split('\\n');
+            
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes('Throughput:')) {
+                    const prevLine = lines[i-1] || '';
+                    const match = lines[i].match(/([0-9.]+)\\s*(ops\\/sec|games\\/sec)/);
+                    if (match) {
+                        let name = prevLine.replace(/[0-9.]/g, '').trim();
+                        metrics.push({
+                            name: name || 'Performance',
+                            value: parseFloat(match[1]).toFixed(2),
+                            unit: match[2]
+                        });
+                    }
+                }
+            }
+            
+            if (metrics.length > 0) {
+                displayMetrics(metrics);
+            }
+        }
+        
+        function displayMetrics(metrics) {
+            const grid = document.getElementById('metricsGrid');
+            grid.style.display = 'grid';
+            grid.innerHTML = metrics.map(m => `
+                <div class="metric-card">
+                    <h3>${m.name}</h3>
+                    <div class="value">${m.value}</div>
+                    <div class="unit">${m.unit}</div>
+                </div>
+            `).join('');
+        }
+    </script>
+</body>
+</html>
+        """;
+    }
+}
+
